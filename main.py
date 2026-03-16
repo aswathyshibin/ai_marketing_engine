@@ -1,6 +1,6 @@
 import os
 # Set Playwright path immediately to ensure it's picked up during imports
-if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_STATIC_URL"):
+if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.playwright-browsers"
 
 from fastapi import FastAPI, Request, BackgroundTasks, Form
