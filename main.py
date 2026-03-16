@@ -1,9 +1,13 @@
+import os
+# Set Playwright path immediately to ensure it's picked up during imports
+if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_STATIC_URL"):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.playwright-browsers"
+
 from fastapi import FastAPI, Request, BackgroundTasks, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-import os
 import json
 import uuid
 import random
@@ -13,10 +17,6 @@ from scripts.scheduler import MarketingScheduler
 from scripts.shotstack_client import ShotstackClient
 
 load_dotenv(override=True)
-
-# Ensure Playwright finds browsers in the cloud environment
-if os.environ.get("RAILWAY_ENVIRONMENT"):
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.playwright-browsers"
 
 class PosterRequest(BaseModel):
     course: str
