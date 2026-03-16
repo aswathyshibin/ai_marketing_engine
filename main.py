@@ -14,6 +14,10 @@ from scripts.shotstack_client import ShotstackClient
 
 load_dotenv(override=True)
 
+# Ensure Playwright finds browsers in the cloud environment
+if os.environ.get("RAILWAY_ENVIRONMENT"):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.playwright-browsers"
+
 class PosterRequest(BaseModel):
     course: str
     audience: str
