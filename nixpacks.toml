@@ -5,7 +5,10 @@ PLAYWRIGHT_BROWSERS_PATH = "/app/.playwright-browsers"
 nixPkgs = ["python3", "ffmpeg", "libnss3", "nspr", "libatk", "at-spi2-atk", "libdrm", "libxcb", "libxkbcommon", "mesa", "alsa-lib"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt", "playwright install chromium"]
+cmds = [
+    "pip install -r requirements.txt",
+    "PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-browsers playwright install chromium"
+]
 
 [start]
 cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
