@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+output/
+assets/logos/*.png
+assets/logos/*.jpeg
+test_audio.mp3
+*.mp4
+.venv/
+node_modules/
+.DS_Store
+*.log
