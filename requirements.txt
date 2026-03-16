@@ -9,6 +9,8 @@ jinja2
 python-dotenv
 aiohttp
 aiofiles
-jinja2
 python-multipart
 imageio[pyav]
+requests
+numpy
+Pillow
