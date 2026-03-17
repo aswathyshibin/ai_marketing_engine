@@ -1,7 +1,8 @@
 import os
-# Set Playwright path immediately to ensure it's picked up during imports
+# Unified Playwright path for Railway
 if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.playwright-browsers"
+    if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/playwright-browsers"
 
 from fastapi import FastAPI, Request, BackgroundTasks, Form
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -57,6 +58,28 @@ async def dashboard(request: Request):
             "total_reels": len(reels)
         }
     })
+
+@app.get("/debug-env")
+async def debug_env():
+    import subprocess
+    browser_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "Not Set")
+    path_exists = os.path.exists(browser_path) if browser_path != "Not Set" else False
+    
+    contents = []
+    if path_exists:
+        try:
+            contents = os.listdir(browser_path)
+        except Exception as e:
+            contents = [f"Error listing: {str(e)}"]
+
+    return {
+        "PLAYWRIGHT_BROWSERS_PATH": browser_path,
+        "exists": path_exists,
+        "contents": contents,
+        "cwd": os.getcwd(),
+        "whoami": subprocess.check_output(["whoami"]).decode().strip(),
+        "env_vars": {k: v for k, v in os.environ.items() if "KEY" not in k and "TOKEN" not in k and "SECRET" not in k}
+    }
 
 @app.post("/generate-manual-poster")
 async def generate_manual_poster(request: PosterRequest):

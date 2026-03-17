@@ -1,14 +1,14 @@
 [variables]
-PLAYWRIGHT_BROWSERS_PATH = "/app/.playwright-browsers"
+PLAYWRIGHT_BROWSERS_PATH = "/app/playwright-browsers"
 
 [phases.setup]
-nixPkgs = ["python3", "ffmpeg", "libnss3", "nspr", "libatk", "at-spi2-atk", "libdrm", "libxcb", "libxkbcommon", "mesa", "alsa-lib"]
+nixPkgs = ["python3", "ffmpeg", "libnss3", "nspr", "libatk", "at-spi2-atk", "libdrm", "libxcb", "libxkbcommon", "mesa", "alsa-lib", "libgbm1"]
 
 [phases.install]
 cmds = [
     "pip install -r requirements.txt",
-    "mkdir -p .playwright-browsers",
-    "PLAYWRIGHT_BROWSERS_PATH=./.playwright-browsers playwright install chromium"
+    "mkdir -p /app/playwright-browsers",
+    "PLAYWRIGHT_BROWSERS_PATH=/app/playwright-browsers playwright install chromium"
 ]
 
 [start]
