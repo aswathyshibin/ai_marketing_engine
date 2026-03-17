@@ -16,5 +16,11 @@ cmds = [
     "PLAYWRIGHT_BROWSERS_PATH=/app/playwright-browsers playwright install chromium"
 ]
 
+[phases.postinstall]
+cmds = [
+    "echo 'Listing playwright-browsers directory:'",
+    "ls -R /app/playwright-browsers || echo 'Directory not found!'"
+]
+
 [start]
 cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"

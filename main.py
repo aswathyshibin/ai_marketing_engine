@@ -1,8 +1,8 @@
 import os
-# Unified Playwright path for Railway
+# Force unified path to ensure consistency regardless of dashoard settings
 if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
-    if not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/playwright-browsers"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/playwright-browsers"
+    print(f"DEBUG: Forced Browser Path: {os.environ.get('PLAYWRIGHT_BROWSERS_PATH')}")
 
 from fastapi import FastAPI, Request, BackgroundTasks, Form
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -26,7 +26,23 @@ class PosterRequest(BaseModel):
     topic: str = None
     cta: str = None
 
-app = FastAPI(title="Acadeno AI Marketing Engine")
+app = FastAPI(title="Acadeno AI Marketing Engine - v3")
+
+@app.get("/debug-env")
+async def debug_env():
+    import os
+    browser_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "Not Set")
+    path_exists = os.path.exists(browser_path)
+    contents = os.listdir(browser_path) if path_exists else []
+    
+    return {
+        "status": "ready",
+        "version": "v3.1",
+        "PLAYWRIGHT_BROWSERS_PATH": browser_path,
+        "exists": path_exists,
+        "contents": contents,
+        "env": {k: v for k, v in os.environ.items() if "KEY" not in k and "TOKEN" not in k}
+    }
 
 # Setup directories
 print(f"DEBUG: Railway Environment detected: {bool(os.environ.get('RAILWAY_ENVIRONMENT'))}")
@@ -61,27 +77,6 @@ async def dashboard(request: Request):
         }
     })
 
-@app.get("/debug-env")
-async def debug_env():
-    import subprocess
-    browser_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "Not Set")
-    path_exists = os.path.exists(browser_path) if browser_path != "Not Set" else False
-    
-    contents = []
-    if path_exists:
-        try:
-            contents = os.listdir(browser_path)
-        except Exception as e:
-            contents = [f"Error listing: {str(e)}"]
-
-    return {
-        "PLAYWRIGHT_BROWSERS_PATH": browser_path,
-        "exists": path_exists,
-        "contents": contents,
-        "cwd": os.getcwd(),
-        "whoami": subprocess.check_output(["whoami"]).decode().strip(),
-        "env_vars": {k: v for k, v in os.environ.items() if "KEY" not in k and "TOKEN" not in k and "SECRET" not in k}
-    }
 
 @app.post("/generate-manual-poster")
 async def generate_manual_poster(request: PosterRequest):
