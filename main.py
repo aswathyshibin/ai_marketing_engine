@@ -29,6 +29,8 @@ class PosterRequest(BaseModel):
 app = FastAPI(title="Acadeno AI Marketing Engine")
 
 # Setup directories
+print(f"DEBUG: Railway Environment detected: {bool(os.environ.get('RAILWAY_ENVIRONMENT'))}")
+print(f"DEBUG: Browser Path: {os.environ.get('PLAYWRIGHT_BROWSERS_PATH')}")
 os.makedirs("output/posters", exist_ok=True)
 os.makedirs("output/reels", exist_ok=True)
 os.makedirs("assets", exist_ok=True)
