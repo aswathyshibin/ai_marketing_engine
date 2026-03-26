@@ -21,15 +21,27 @@ class ContentEngine:
         df = pd.read_csv(self.courses_path)
         return df.to_dict('records')
 
-    def refine_text(self, text: str, context: str = "marketing", max_words: int = 0) -> str:
+    def refine_text(self, text: str, context: str = "marketing", max_words: int = 0, **kwargs) -> str:
         """Uses AI (NLP) to refine and professionalize sentences into high-status copy."""
         word_constraint = f" strictly enforced word count of MAX {max_words} WORDS" if max_words > 0 else ""
+        language = kwargs.get('language', 'english')
+        malayalam_rules = ""
+        if language.lower() == "malayalam":
+            malayalam_rules = """
+        IMPORTANT: You MUST write the output in Malayalam. Use natural, conversational 'Manglish' style (English technical terms written in Malayalam script). 
+        EXAMPLE: Instead of 'ബൃഹത്തായ ഡാറ്റ വിശ്ലേഷണം', use 'ഡാറ്റ അനലിറ്റിക്സ് മാസ്റ്ററി'. 
+        Keep words like 'AI', 'Course', 'Career', 'Success' in English sounds but write them in Malayalam script. 
+        Avoid 'pure' textbook Malayalam. Stay in Malayalam script.
+            """
+
         prompt = f"""
         Refine the following {context} text into 'Magnetic' high-status marketing copy with{word_constraint}.
         Use sophisticated, professional vocabulary that attracts elite clients.
         Focus on clarity, authority, and professional impact.
         Avoid clichés; use power words that command attention.
         IMPORTANT: Your output MUST NOT exceed {max_words if max_words > 0 else 'a reasonable length'} words.
+        {f"The output MUST be in {language}." if language != 'english' else "The output MUST be in English."}
+        {malayalam_rules}
         
         Text to refine: {text}
         
@@ -45,8 +57,17 @@ class ContentEngine:
         except:
             return text
 
-    def generate_marketing_bundle(self, course: Dict) -> Dict:
+    def generate_marketing_bundle(self, course: Dict, language: str = "english") -> Dict:
         """Generates captions, hashtags, and poster headline using Groq."""
+        malayalam_rules = ""
+        if language.lower() == "malayalam":
+            malayalam_rules = """
+        IMPORTANT: If the language is Malayalam, use natural, conversational 'Manglish' style. 
+        Keep technical words (like 'Data Analytics', 'AI', 'Full Stack', 'Course', 'Career', 'Future', 'Enroll') as English sounds but written in Malayalam script. 
+        EXAMPLE: 'ഡാറ്റ അനലിറ്റിക്സ് കരിയർ സക്സസ്' (Data Analytics Career Success) is better than pure translations.
+        Do NOT use pure formal translations.
+            """
+
         prompt = f"""
         Generate a professional social media marketing bundle for the following course:
         Course: {course['Course']}
@@ -65,14 +86,17 @@ class ContentEngine:
               {{"text": "Final 4-5 seconds of dialogue and CTA", "keyword": "image search keyword"}}
             ]
           }},
-        - "is_tech": boolean, true if it's a technical course.
+        - "visual_keyword": A single English word describing the visual theme of this topic (e.g. 'coding', 'finance', 'cybersecurity').
+        
+        IMPORTANT: All text content (caption, headline) MUST be in {language}. {malayalam_rules}
+        CRITICAL RULE FOR VIDEO: The "video_script" dialogue text MUST ALWAYS BE IN ENGLISH, even if the requested language is Malayalam. This is strictly required for the AI Voice System.
         """
 
         chat_completion = self.client.chat.completions.create(
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a professional social media marketer for Acadeno Technologies. You write high-converting copy.",
+                    "content": f"You are a professional social media marketer for Acadeno Technologies. You write high-converting copy.{' Return ONLY Malayalam text.' if language == 'malayalam' else ''}",
                 },
                 {
                     "role": "user",
@@ -87,8 +111,8 @@ class ContentEngine:
         bundle = json.loads(chat_completion.choices[0].message.content)
         
         # NLP Refinement for each generated text component
-        bundle['poster_headline'] = self.refine_text(bundle['poster_headline'], "poster headline")
-        bundle['caption'] = self.refine_text(bundle['caption'], "social media caption")
+        bundle['poster_headline'] = self.refine_text(bundle['poster_headline'], "poster headline", language=language)
+        bundle['caption'] = self.refine_text(bundle['caption'], "social media caption", language=language)
         
         return bundle
 

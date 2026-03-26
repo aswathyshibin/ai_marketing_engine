@@ -24,7 +24,7 @@ async def test_fastapi_context():
             f.write(response.content)
 
         # This simulates main.py calling create_reel synchronously from inside an async endpoint
-        output = await vg.create_reel(data, "test_fastapi_reel", bg_image_path=bg_path)
+        output = await vg.create_reel(data, "test_fastapi_reel", bg_image_paths=[bg_path])
         print("Success! Output:", output)
     except Exception as e:
         import traceback

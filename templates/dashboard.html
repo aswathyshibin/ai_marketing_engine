@@ -267,6 +267,13 @@
                         <option value="educational">Educational (Informative & Deep)</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>Language</label>
+                    <select id="manual-language">
+                        <option value="english">English</option>
+                        <option value="malayalam">Malayalam</option>
+                    </select>
+                </div>
                 <button class="btn" style="width:100%" onclick="generateManualPoster(event)">GENERATE PROFESSIONAL POSTER</button>
                 
                 <div id="manual-result" style="margin-top: 30px; display: none;">
@@ -308,6 +315,21 @@
                         <option value="educational">Educational (Informative & Deep)</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>Language</label>
+                    <select id="reel-language">
+                        <option value="english">English</option>
+                        <option value="malayalam">Malayalam</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Video Theme</label>
+                    <select id="reel-theme">
+                        <option value="TECH">High-Tech (Cyan & Navy)</option>
+                        <option value="CORPORATE">Corporate (Blue & Gray)</option>
+                        <option value="CREATIVE">Creative (Pink & Purple)</option>
+                    </select>
+                </div>
                 <button class="btn" style="width:100%" onclick="generateManualReel(event)">GENERATE PROFESSIONAL REEL</button>
                 
                 <div id="reel-result" style="margin-top: 30px; display: none;">
@@ -338,6 +360,7 @@
             const tone = document.getElementById('manual-tone').value;
             const topic = document.getElementById('manual-topic').value;
             const cta = document.getElementById('manual-cta').value;
+            const language = document.getElementById('manual-language').value;
             const btn = evt.currentTarget;
             
             if (!course || !audience) {
@@ -352,7 +375,7 @@
                 const res = await fetch('/generate-manual-poster', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ course, audience, tone, topic, cta })
+                    body: JSON.stringify({ course, audience, tone, topic, cta, language })
                 });
                 const data = await res.json();
                 
@@ -367,6 +390,33 @@
                 alert('Connection Error');
             } finally {
                 btn.innerText = 'GENERATE PROFESSIONAL POSTER';
+                btn.disabled = false;
+            }
+        }
+
+        async function pollLocalJobStatus(jobId, btn) {
+            try {
+                const res = await fetch(`/check-job-status/${jobId}`);
+                const data = await res.json();
+                
+                if (data.status === 'done') {
+                    document.getElementById('reel-headline').innerHTML = `<span style="color:var(--primary)">✅ REEL READY!</span><br>Your professional video is now available.`;
+                    document.getElementById('reel-video').style.display = 'block';
+                    const video = document.getElementById('reel-video');
+                    video.src = '/output/reels/' + data.filename;
+                    video.load();
+                    btn.innerText = 'GENERATE PROFESSIONAL REEL';
+                    btn.disabled = false;
+                } else if (data.status === 'failed') {
+                    document.getElementById('reel-headline').innerHTML = `<span style="color:var(--accent)">❌ GENERATION FAILED</span><br>Error: ${data.error || 'Check server logs'}`;
+                    btn.innerText = 'GENERATE PROFESSIONAL REEL';
+                    btn.disabled = false;
+                } else {
+                    // Still processing
+                    setTimeout(() => pollLocalJobStatus(jobId, btn), 2000);
+                }
+            } catch (e) {
+                console.error("Local Job Polling error:", e);
                 btn.disabled = false;
             }
         }
@@ -404,6 +454,8 @@
             const tone = document.getElementById('reel-tone').value;
             const topic = document.getElementById('reel-topic').value;
             const cta = document.getElementById('reel-cta').value;
+            const language = document.getElementById('reel-language').value;
+            const theme = document.getElementById('reel-theme').value;
             const btn = evt.currentTarget;
             
             if (!course || !audience) {
@@ -411,19 +463,29 @@
                 return;
             }
 
+            const endpoint = '/generate-manual-reel';
+            const body = { course, audience, tone, topic, cta, language, theme };
+
             btn.innerText = 'CRAFTING AI REEL (MAY TAKE 30S)...';
             btn.disabled = true;
 
             try {
-                const res = await fetch('/generate-manual-reel', {
+                const res = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ course, audience, tone, topic, cta })
+                    body: JSON.stringify(body)
                 });
                 const data = await res.json();
                 
                 if (data.success) {
-                    if (data.cloud) {
+                    if (data.job_id) {
+                        document.getElementById('reel-result').style.display = 'block';
+                        document.getElementById('reel-video').style.display = 'none';
+                        document.getElementById('reel-headline').innerHTML = `<span style="color:var(--primary)">🎬 PROFESSIONAL RENDERING STARTED...</span><br>Your high-quality reel is being assembled. Please wait ~15-20s.`;
+                        
+                        btn.innerText = 'RENDERING IN BACKGROUND...';
+                        pollLocalJobStatus(data.job_id, btn);
+                    } else if (data.cloud) {
                         document.getElementById('reel-result').style.display = 'block';
                         document.getElementById('reel-headline').innerHTML = `<span style="color:var(--primary)">☁️ CLOUD RENDER IN PROGRESS...</span><br>Render ID: ${data.render_id.substring(0,8)}...<br>Please wait ~15s while the cloud renders your high-quality reel.`;
                         document.getElementById('reel-video').style.display = 'none';
@@ -444,13 +506,7 @@
             } catch (e) {
                 alert('Connection Error');
             } finally {
-                // If cloud was started, the polling function handles enabling the button
-                // We only re-enable here if it was a local render or if cloud failed to start
-                const resultData = typeof data !== 'undefined' ? data : {};
-                if (!resultData.cloud) {
-                    btn.innerText = 'GENERATE PROFESSIONAL REEL';
-                    btn.disabled = false;
-                }
+                // Polling handles cleanup
             }
         }
 

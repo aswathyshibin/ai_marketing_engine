@@ -16,6 +16,7 @@ import requests
 from dotenv import load_dotenv
 from scripts.scheduler import MarketingScheduler
 from scripts.shotstack_client import ShotstackClient
+from scripts.talking_face_client import TalkingFaceClient
 
 load_dotenv(override=True)
 
@@ -25,6 +26,9 @@ class PosterRequest(BaseModel):
     tone: str
     topic: str = None
     cta: str = None
+    language: str = "english"
+    avatar_url: str = None
+    theme: str = "TECH" # TECH, CORPORATE, CREATIVE
 
 app = FastAPI(title="Acadeno AI Marketing Engine - v3")
 
@@ -35,13 +39,25 @@ async def debug_env():
     path_exists = os.path.exists(browser_path)
     contents = os.listdir(browser_path) if path_exists else []
     
+    # Check for fonts
+    font_path = os.path.join("assets", "fonts", "Inter-Bold.ttf")
+    font_exists = os.path.exists(font_path)
+    
+    # Check writable directories
+    writable = {}
+    for d in ["output", "output/posters", "output/reels", "output/temp"]:
+        writable[d] = os.access(d, os.W_OK) if os.path.exists(d) else "Not Found"
+
     return {
         "status": "ready",
-        "version": "v3.1",
+        "version": "v3.2",
         "PLAYWRIGHT_BROWSERS_PATH": browser_path,
-        "exists": path_exists,
-        "contents": contents,
-        "env": {k: v for k, v in os.environ.items() if "KEY" not in k and "TOKEN" not in k}
+        "browser_path_exists": path_exists,
+        "browser_contents_count": len(contents),
+        "font_bold_exists": font_exists,
+        "writable_dirs": writable,
+        "railway_env": bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID")),
+        "env_vars": {k: v for k, v in os.environ.items() if any(x in k for x in ["PORT", "RAILWAY", "PLAYWRIGHT"])}
     }
 
 # Setup directories
@@ -82,11 +98,14 @@ async def dashboard(request: Request):
 async def generate_manual_poster(request: PosterRequest):
     try:
         # 1. Generate High-Impact Content (Instagram Square Optimized)
-        prompt = f"Generate a ultra-short, magnetic professional headline (MAX 4 WORDS) for a course named '{request.course}'. Targeted at {request.audience}."
+        lang_instruction = f" The content MUST be in {request.language}." if request.language != "english" else ""
+        malayalam_instruction = " Use ONLY natural, conversational 'Manglish' style (English technical terms written in Malayalam script). EXAMPLE: Instead of 'ബൃഹത്തായ ഡാറ്റ വിശ്ലേഷണം', use 'ഡാറ്റ അനലിറ്റിക്സ് മാസ്റ്ററി'. Keep words like 'AI', 'Course', 'Career', 'Success' in English sounds but write them in Malayalam script. Avoid 'pure' formal Malayalam. Stay in Malayalam script." if request.language == "malayalam" else ""
+        
+        prompt = f"Generate a ultra-short, magnetic professional headline (MAX 4 WORDS) for a course named '{request.course}'. Targeted at {request.audience}.{lang_instruction}{malayalam_instruction}"
         
         chat_completion = scheduler.engine.client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are an elite marketing copywriter. Return ONLY a 4-word headline. No punctuation at end."},
+                {"role": "system", "content": f"You are an elite marketing copywriter. Return ONLY {request.language} text. Return ONLY a 4-word headline. No punctuation at end."},
                 {"role": "user", "content": prompt}
             ],
             model="llama-3.3-70b-versatile",
@@ -94,10 +113,10 @@ async def generate_manual_poster(request: PosterRequest):
         raw_headline = chat_completion.choices[0].message.content.strip().strip('"')
         
         # Generate a short professional insight (max 12 words)
-        insight_prompt = f"Write a single, high-impact professional power-statement (MAX 12 WORDS) about the career value of '{request.course}'. Tone: Executive."
+        insight_prompt = f"Write a single, high-impact professional power-statement (MAX 12 WORDS) about the career value of '{request.course}'. Tone: Executive.{lang_instruction}{malayalam_instruction}"
         insight_completion = scheduler.engine.client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are an elite marketing copywriter. Return ONLY one extremely short sentence."},
+                {"role": "system", "content": f"You are an elite marketing copywriter. Return ONLY {request.language} text. Return ONLY one extremely short sentence."},
                 {"role": "user", "content": insight_prompt}
             ],
             model="llama-3.3-70b-versatile",
@@ -105,8 +124,8 @@ async def generate_manual_poster(request: PosterRequest):
         description = insight_completion.choices[0].message.content.strip().strip('"')
 
         # NLP Refinement with word limits
-        headline = scheduler.engine.refine_text(raw_headline, "ultra short headline", max_words=4)
-        description = scheduler.engine.refine_text(description, "concise power statement", max_words=12)
+        headline = scheduler.engine.refine_text(raw_headline, "ultra short headline", max_words=4, language=request.language)
+        description = scheduler.engine.refine_text(description, "concise power statement", max_words=12, language=request.language)
 
         # 2. Prepare data for poster generator
         logo_png = os.path.join("assets", "logos", "acadeno_logo.png")
@@ -120,24 +139,43 @@ async def generate_manual_poster(request: PosterRequest):
             with open(logo_path, "rb") as image_file:
                 logo_base64 = f"data:{mime_type};base64,{base64.b64encode(image_file.read()).decode()}"
 
-        # Select a beautiful background image (High-authority Unsplash collections)
-        bg_url = "https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1080&q=80" # Default Deep Tech
-        course_lower = request.course.lower()
-        if "flutter" in course_lower or "mobile" in course_lower:
-            bg_url = "https://images.unsplash.com/photo-1512941937669-90a1b58e729c?auto=format&fit=crop&w=1080&q=80"
-        elif "ai" in course_lower or "intelligence" in course_lower:
-            bg_url = "https://images.unsplash.com/photo-1677442136019-21780ecad995?auto=format&fit=crop&w=1080&q=80"
-        elif "marketing" in course_lower or "business" in course_lower:
-            bg_url = "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1080&q=80"
+        # 1.5 Generate AI Image Prompt via Groq and fetch via Pollinations
+        import urllib.parse
+        image_prompt_request = f"Write a highly descriptive, vivid, 25-word image generation prompt for a professional, cinematic, ultra-realistic background image for a marketing poster about '{request.course}'. Theme: {request.theme}. No text, no words in the image. Return ONLY the prompt text, nothing else."
+        image_prompt_completion = scheduler.engine.client.chat.completions.create(
+            messages=[{"role": "user", "content": image_prompt_request}],
+            model="llama-3.1-8b-instant",
+        )
+        generated_image_prompt = image_prompt_completion.choices[0].message.content.strip()
+        print(f"DEBUG: Generated AI Image Prompt: {generated_image_prompt}")
+
+        # Build dynamic background URL using Pollinations Free API
+        encoded_prompt = urllib.parse.quote(generated_image_prompt)
+        bg_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1080&height=1080&nologo=true&enhance=true"
+        
+        print(f"DEBUG: Selected Final AI Image URL: {bg_url}")
+
+        # Translate CTA if needed
+        cta = request.cta if request.cta else "Join Now"
+        if request.language == "malayalam":
+            cta_completion = scheduler.engine.client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": "You are an elite marketing copywriter. Return ONLY the natural, conversational 'Manglish' style (English words in Malayalam script if needed) translation of the given CTA (MAX 2 WORDS)."},
+                    {"role": "user", "content": f"Translate this CTA to Malayalam: {cta}"}
+                ],
+                model="llama-3.3-70b-versatile",
+            )
+            cta = cta_completion.choices[0].message.content.strip().strip('"')
 
         data = {
             "course_name": request.course, # Explicit course name
             "Topic": description,
             "Target Audience": request.audience,
-            "CTA": request.cta if request.cta else "Join Now",
+            "CTA": cta,
             "poster_headline": headline,
             "logo_data": logo_base64,
-            "bg_url": bg_url
+            "bg_url": bg_url,
+            "language": request.language
         }
 
         # 3. Generate Poster
@@ -149,7 +187,7 @@ async def generate_manual_poster(request: PosterRequest):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 @app.post("/generate-manual-reel")
-async def generate_manual_reel(request: PosterRequest):
+async def generate_manual_reel(request: PosterRequest, background_tasks: BackgroundTasks):
     try:
         # 1. Generate Viral Script and Headline
         bundle = scheduler.engine.generate_marketing_bundle({
@@ -157,7 +195,7 @@ async def generate_manual_reel(request: PosterRequest):
             "Topic": request.topic if request.topic else request.course,
             "Target Audience": request.audience,
             "CTA": request.cta if request.cta else "Join Now"
-        })
+        }, language="english")
         
         # 2. Collect Background Assets (URLs or Paths)
         scenes = bundle.get("video_script", {}).get("scenes", [])
@@ -165,82 +203,81 @@ async def generate_manual_reel(request: PosterRequest):
         shotstack_scenes = []
         shotstack_key = os.getenv("SHOTSTACK_API_KEY")
         
-        from urllib.parse import quote
-        
-        for i, scene in enumerate(scenes):
-            raw_keyword = scene.get("keyword", "technology")
-            keyword = raw_keyword.split(',')[0].strip().replace(' ', '+')
-            
-            # High-res hardcoded library for Acadeno topics (reliable CDNs)
-            library = {
-                "flutter": [
-                    "https://images.unsplash.com/photo-1512941937669-90a1b58e729c?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1551650975-87deedd944c3?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1517694712202-14dd9538aa97?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1080&q=80"
-                ],
-                "ai": [
-                    "https://images.unsplash.com/photo-1677442136019-21780ecad995?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1593508512255-86ab42a8e620?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1620712943543-bcc4628c6757?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1485827404703-89b55fcc595e?auto=format&fit=crop&w=1080&q=80"
-                ],
-                "code": [
-                    "https://images.unsplash.com/photo-1542831371-29b0f74f9713?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1587620962725-abab7fe55159?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1550439062-609e1531270e?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1516116216624-53e697fedbea?auto=format&fit=crop&w=1080&q=80"
-                ],
-                "business": [
-                    "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1080&q=80",
-                    "https://images.unsplash.com/photo-1497215728101-856f4ea42174?auto=format&fit=crop&w=1080&q=80"
-                ]
-            }
-
-            bg_url = f"https://loremflickr.com/1080/1920/{keyword}"
-            category = "code"
-            if "flutter" in keyword.lower() or "mobile" in keyword.lower(): category = "flutter"
-            elif "ai" in keyword.lower() or "intelligence" in keyword.lower(): category = "ai"
-            if category in library:
-                bg_url = random.choice(library[category])
-            
-            # If using Shotstack, we just need the URL
-            if shotstack_key:
-                shotstack_scenes.append({
-                    "image_url": bg_url,
-                    "text": scenes[i].get("text", ""),
-                    "duration": 3.0
-                })
-                continue
-
-            # Otherwise, download locally for MoviePy
+        async def download_image(i, bg_url):
             try:
+                keyword = scenes[i].get("keyword", "technology").split(',')[0].strip().replace(' ', '+')
                 bg_path = os.path.join("output", "temp", f"bg_{uuid.uuid4().hex[:8]}_{i}.jpg")
-                response = requests.get(bg_url, stream=True, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15, allow_redirects=True)
+                
+                # Use a session or direct request (requests is blocking, but we run in a thread or use a faster way)
+                # For minimal changes, we'll keep requests but wrap it. 
+                # Better: use httpx if available, but let's stick to what's there but parallelized.
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, lambda: requests.get(bg_url, stream=True, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15, allow_redirects=True))
+                
                 if response.status_code == 200:
                     with open(bg_path, "wb") as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             f.write(chunk)
                     if os.path.exists(bg_path) and os.path.getsize(bg_path) > 5000:
-                        bg_paths.append(bg_path)
-                        continue
-                # Fallback for local
-                res = requests.get("https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1080&q=80", stream=True)
+                        return bg_path
+                
+                # Fallback
+                res = await loop.run_in_executor(None, lambda: requests.get("https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1080&q=80", stream=True))
                 with open(bg_path, "wb") as f: f.write(res.content)
-                bg_paths.append(bg_path)
+                return bg_path
             except Exception as e:
-                print(f"ERROR: Image download failed for keyword {keyword} for local rendering: {e}")
-                # Use a rock-solid tech fallback for local rendering if all else fails
-                bg_path = os.path.join("output", "temp", f"bg_fallback_{uuid.uuid4().hex[:8]}_{i}.jpg")
-                fallback_url = "https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1080&q=80"
-                res = requests.get(fallback_url, stream=True, timeout=10)
-                with open(bg_path, "wb") as f:
-                    f.write(res.content)
-                bg_paths.append(bg_path)
+                print(f"ERROR: Image download failed for scene {i}: {e}")
+                return None
+
+        # Prepare download tasks (ONLY if Pexels key is NOT set, or as a manual fallback)
+        download_tasks = []
+        pexels_key = os.getenv("PEXELS_API_KEY")
+
+        if not pexels_key:
+            for i, scene in enumerate(scenes):
+                raw_keyword = scene.get("keyword", "technology")
+                keyword = raw_keyword.split(',')[0].strip().replace(' ', '+')
+                
+                # High-res hardcoded library for Acadeno topics
+                library = {
+                    "flutter": [
+                        "https://images.unsplash.com/photo-1512941937669-90a1b58e729c?auto=format&fit=crop&w=1080&q=80",
+                        "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?auto=format&fit=crop&w=1080&q=80",
+                        "https://images.unsplash.com/photo-1551650975-87deedd944c3?auto=format&fit=crop&w=1080&q=80"
+                    ],
+                    "ai": [
+                        "https://images.unsplash.com/photo-1677442136019-21780ecad995?auto=format&fit=crop&w=1080&q=80",
+                        "https://images.unsplash.com/photo-1593508512255-86ab42a8e620?auto=format&fit=crop&w=1080&q=80"
+                    ],
+                    "code": [
+                        "https://images.unsplash.com/photo-1542831371-29b0f74f9713?auto=format&fit=crop&w=1080&q=80",
+                        "https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=1080&q=80"
+                    ]
+                }
+
+                bg_url = f"https://loremflickr.com/1080/1920/{keyword}"
+                category = "code"
+                if "flutter" in keyword.lower() or "mobile" in keyword.lower(): category = "flutter"
+                elif "ai" in keyword.lower() or "intelligence" in keyword.lower(): category = "ai"
+                
+                if category in library:
+                    bg_url = random.choice(library[category])
+                
+                if not shotstack_key:
+                    download_tasks.append(download_image(i, bg_url))
+                else:
+                    shotstack_scenes.append({
+                        "image_url": bg_url,
+                        "text": scenes[i].get("text", ""),
+                        "duration": 3.0
+                    })
+
+            # Execute downloads in parallel
+            if download_tasks:
+                results = await asyncio.gather(*download_tasks)
+                bg_paths = [path for path in results if path]
+        else:
+            print("DEBUG: Pexels key found, skipping redundant image downloads in main.py")
 
 
         # 4. Generate Reel
@@ -261,29 +298,93 @@ async def generate_manual_reel(request: PosterRequest):
                 "filename": f"{filename}.mp4" # Placeholder
             }
 
-        # --- LOCAL RENDERING (FALLBACK) ---
-        data = {
+        # 4. Generate Reel in Background
+        job_id = f"reel_{uuid.uuid4().hex[:8]}"
+        filename = f"{job_id}.mp4"
+        
+        # We store the status in a simple dict for this session (since it's a small app)
+        if not hasattr(app, "jobs"): app.jobs = {}
+        app.jobs[job_id] = {"status": "processing", "filename": filename}
+
+        async def run_rendering():
+            try:
+                # Local Background Path
+                local_bg_paths = bg_paths if 'bg_paths' in locals() else []
+                logo_png = os.path.join("assets", "logos", "acadeno_logo.png")
+                logo_jpeg = os.path.join("assets", "logos", "acadeno_logo.jpeg")
+                logo_path = logo_png if os.path.exists(logo_png) else logo_jpeg
+                if not os.path.exists(logo_path): logo_path = None
+
+                data = {
+                    "Course": request.course,
+                    "poster_headline": bundle.get("poster_headline", "Master This Skill"),
+                    "video_script": bundle.get("video_script", {"scenes": []})
+                }
+
+                await scheduler.video_gen.create_reel(data, job_id, bg_image_paths=local_bg_paths, logo_path=logo_path, theme=request.theme)
+                app.jobs[job_id]["status"] = "done"
+                
+                # Cleanup temp backgrounds
+                for path in local_bg_paths:
+                    try: 
+                        if os.path.exists(path): os.remove(path)
+                    except: pass
+            except Exception as e:
+                print(f"ERROR in Background Reel Gen: {e}")
+                app.jobs[job_id]["status"] = "failed"
+                app.jobs[job_id]["error"] = str(e)
+
+        background_tasks.add_task(run_rendering)
+
+        return {
+            "success": True, 
+            "job_id": job_id, 
+            "message": "Generation started! Instant feedback provided.",
+            "status": "processing"
+        }
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+@app.post("/generate-talking-reel")
+async def generate_talking_reel(request: PosterRequest):
+    """
+    Generate a talking head reel using a photo and AI script.
+    """
+    try:
+        # 1. Generate Voice Script
+        bundle = scheduler.engine.generate_marketing_bundle({
             "Course": request.course,
-            "poster_headline": bundle.get("poster_headline", "Master This Skill"),
-            "video_script": bundle.get("video_script", {"scenes": []})
+            "Topic": request.topic if request.topic else request.course,
+            "Target Audience": request.audience,
+            "CTA": request.cta if request.cta else "Join Now"
+        }, language=request.language)
+        
+        script_text = bundle.get("video_script", {}).get("scenes", [{}])[0].get("text", "Unlock your potential with Acadeno.")
+        # Join all scene text for a full script if multiple scenes
+        scenes = bundle.get("video_script", {}).get("scenes", [])
+        if len(scenes) > 1:
+            script_text = " ".join([s["text"] for s in scenes])
+
+        # 2. Talking Head Generation (D-ID)
+        source_url = request.avatar_url
+        if not source_url:
+            return JSONResponse(status_code=400, content={"success": False, "error": "Please provide an 'avatar_url'. D-ID requires a public link to your photo."})
+        
+        client = TalkingFaceClient()
+        print(f"DEBUG: Starting Talking Head generation for: {script_text[:50]}...")
+        
+        talk_resp = client.create_talk(source_url, script_text)
+        talk_id = talk_resp.get("id")
+        
+        return {
+            "success": True, 
+            "status": "created",
+            "talk_id": talk_id,
+            "message": "AI Avatar is being generated! This usually takes 30-60 seconds."
         }
         
-        # Get Logo Path
-        logo_png = os.path.join("assets", "logos", "acadeno_logo.png")
-        logo_jpeg = os.path.join("assets", "logos", "acadeno_logo.jpeg")
-        logo_path = logo_png if os.path.exists(logo_png) else logo_jpeg
-        if not os.path.exists(logo_path):
-            logo_path = None
-
-        output_path = await scheduler.video_gen.create_reel(data, filename, bg_image_paths=bg_paths, logo_path=logo_path)
-        
-        # Clean up temp backgrounds
-        for path in bg_paths:
-            try:
-                if os.path.exists(path): os.remove(path)
-            except: pass
-
-        return {"success": True, "filename": f"{filename}.mp4", "headline": data["poster_headline"]}
     except Exception as e:
         import traceback
         print(traceback.format_exc())
@@ -293,6 +394,19 @@ async def generate_manual_reel(request: PosterRequest):
 async def generate_all(background_tasks: BackgroundTasks):
     background_tasks.add_task(scheduler.run_pipeline)
     return {"message": "Generation pipeline started in background."}
+
+@app.get("/check-job-status/{job_id}")
+async def check_job_status(job_id: str):
+    if not hasattr(app, "jobs") or job_id not in app.jobs:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Job not found"})
+    
+    return {
+        "success": True,
+        "job_id": job_id,
+        "status": app.jobs[job_id]["status"],
+        "filename": app.jobs[job_id].get("filename"),
+        "error": app.jobs[job_id].get("error")
+    }
 
 @app.get("/check-reel-status/{render_id}")
 async def check_reel_status(render_id: str):
@@ -313,6 +427,41 @@ async def check_reel_status(render_id: str):
             "status": state,
             "url": video_url,
             "render_id": render_id
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+@app.get("/check-talking-head-status/{talk_id}")
+async def check_talking_head_status(talk_id: str):
+    try:
+        client = TalkingFaceClient()
+        status_resp = client.get_talk_status(talk_id)
+        
+        state = status_resp.get("status")
+        video_url = status_resp.get("result_url")
+        
+        if state == "done" and video_url:
+            # Optionally download locally in background
+            filename = f"talking_reel_{talk_id[:8]}.mp4"
+            output_path = os.path.join("output", "reels", filename)
+            if not os.path.exists(output_path):
+                # We do it synchronously here for simplicity, but in a real app, use BackgroundTasks
+                v_res = requests.get(video_url, stream=True)
+                with open(output_path, "wb") as f:
+                    for chunk in v_res.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            return {
+                "success": True,
+                "status": "done",
+                "url": video_url,
+                "filename": filename
+            }
+            
+        return {
+            "success": True,
+            "status": state,
+            "talk_id": talk_id
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

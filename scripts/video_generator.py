@@ -1,11 +1,14 @@
 import os
 import asyncio
 import edge_tts
-from moviepy import ColorClip, AudioFileClip, CompositeVideoClip, ImageClip
+import multiprocessing
+import requests
+from moviepy import ColorClip, AudioFileClip, CompositeVideoClip, ImageClip, VideoFileClip
 from moviepy.video.fx import CrossFadeIn
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import random
+import uuid
 
 def create_text_image(text, width=1080, height=None, font_path=None, font_size=80, color="white", bg_color=None, padding=None):
     """Creates a premium Glassmorphism-style text image."""
@@ -48,23 +51,7 @@ def create_text_image(text, width=1080, height=None, font_path=None, font_size=8
     draw = ImageDraw.Draw(img)
     
     if bg_color:
-        box_w = text_w + box_padding_h * 2
-        box_h = text_h + box_padding_v * 2
-        box_x0 = (img_w - box_w) / 2
-        box_y0 = (img_h - box_h) / 2
-        box_x1 = box_x0 + box_w
-        box_y1 = box_y0 + box_h
-        
-        # Glass effect base: semi-transparent with slight white tint
-        base_fill = (255, 255, 255, 30) if "black" in str(bg_color).lower() or bg_color[3] > 0 else (255,255,255,20)
-        # Use provided bg_color but ensure it's "glassy"
-        r, g, b, a = bg_color if len(bg_color) == 4 else (*bg_color, 180)
-        glass_fill = (r, g, b, min(a, 160)) 
-        
-        # Draw box with rounded corners and subtle border
-        draw.rounded_rectangle([box_x0, box_y0, box_x1, box_y1], radius=35, fill=glass_fill)
-        # Subtle glass border
-        draw.rounded_rectangle([box_x0, box_y0, box_x1, box_y1], radius=35, outline=(255, 255, 255, 60), width=2)
+        pass # Removed background box to allow text to float cleanly on video
     
     x = (img_w - text_w) / 2
     y = (img_h - text_h) / 2 - bbox[1]
@@ -84,6 +71,7 @@ class VideoGenerator:
         # High-status authoritative professional voice
         self.voice = "en-US-AndrewNeural"
         self.rate = "+15%" # Energetic reels pace
+        self.pexels_api_key = os.getenv("PEXELS_API_KEY")
 
     async def generate_speech(self, text: str, filename: str):
         """Generates speech using edge-tts with professional pacing."""
@@ -92,8 +80,34 @@ class VideoGenerator:
         await communicate.save(output_path)
         return output_path
 
-    async def create_reel(self, data: dict, filename: str, bg_image_paths: list = None, logo_path: str = None):
-        """Creates a professional 9:16 reel with a sequence of images and text overlays."""
+    async def _fetch_pexels_videos(self, keywords: str, count: int = 3):
+        """Fetches vertical videos from Pexels based on keywords."""
+        if not self.pexels_api_key:
+            return []
+        
+        url = f"https://api.pexels.com/videos/search?query={keywords}&per_page={count}&orientation=portrait&size=medium"
+        headers = {"Authorization": self.pexels_api_key}
+        
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, lambda: requests.get(url, headers=headers, timeout=10))
+            if response.status_code == 200:
+                data = response.json()
+                video_urls = []
+                for v in data.get("videos", []):
+                    # Get the link to the mp4 file (usually the first video_file)
+                    video_files = v.get("video_files", [])
+                    if video_files:
+                        # Prefer HD if available
+                        hd_files = [f for f in video_files if f.get("quality") == "hd"]
+                        video_urls.append(hd_files[0]["link"] if hd_files else video_files[0]["link"])
+                return video_urls
+        except Exception as e:
+            print(f"ERROR: Pexels fetch failed: {e}")
+        return []
+
+    async def create_reel(self, data: dict, filename: str, bg_image_paths: list = None, logo_path: str = None, fast_mode: bool = True, theme: str = "TECH"):
+        """Creates a professional 9:16 reel with a sequence of videos/images and text overlays."""
         
         scenes = data.get("video_script", {}).get("scenes", [])
         if not scenes:
@@ -101,187 +115,197 @@ class VideoGenerator:
         else:
             full_text = " ".join([s["text"] for s in scenes])
             
+        print(f"DEBUG: Generating speech for {len(full_text)} chars...")
         audio_path = await self.generate_speech(full_text, f"{filename}.mp3")
         
-        # Move heavy MoviePy logic to a thread to prevent blocking the event loop
+        # --- TURBO OPTIMIZATION: Parallel Downloads ---
+        bg_video_paths = []
+        if self.pexels_api_key and scenes:
+            all_keywords = ", ".join([s.get("keyword", "technology") for s in scenes])
+            video_urls = await self._fetch_pexels_videos(all_keywords, count=len(scenes))
+            
+            async def download_one_video(url, index):
+                try:
+                    v_path = os.path.join(self.temp_dir, f"video_{uuid.uuid4().hex[:8]}_{index}.mp4")
+                    loop = asyncio.get_event_loop()
+                    res = await loop.run_in_executor(None, lambda: requests.get(url, stream=True, timeout=15))
+                    if res.status_code == 200:
+                        with open(v_path, "wb") as f:
+                            for chunk in res.iter_content(chunk_size=16384):
+                                f.write(chunk)
+                        if os.path.exists(v_path) and os.path.getsize(v_path) > 10000:
+                            return v_path
+                except Exception as e:
+                    print(f"DEBUG: Download failed for {url}: {e}")
+                return None
+
+            if video_urls:
+                print(f"DEBUG: Downloading {len(video_urls)} Pexels videos in parallel...")
+                tasks = [download_one_video(url, i) for i, url in enumerate(video_urls)]
+                results = await asyncio.gather(*tasks)
+                bg_video_paths = [r for r in results if r]
+                print(f"DEBUG: Downloaded {len(bg_video_paths)} videos successfully.")
+
+        # Heavy MoviePy logic in thread
         loop = asyncio.get_running_loop()
         output_path = await loop.run_in_executor(
             None, 
             self._render_video, 
-            data, filename, bg_image_paths, logo_path, audio_path
+            data, filename, bg_image_paths, bg_video_paths, logo_path, audio_path, fast_mode, theme
         )
+        
+        # Cleanup temp videos
+        for v_path in bg_video_paths:
+            try:
+                if os.path.exists(v_path): os.remove(v_path)
+            except: pass
+            
         return output_path
 
-    def _render_video(self, data, filename, bg_image_paths, logo_path, audio_path):
-        """Heavy blocking MoviePy rendering logic."""
+    def _render_video(self, data, filename, bg_image_paths, bg_video_paths, logo_path, audio_path, fast_mode, theme):
+        """Heavy blocking MoviePy rendering logic with multi-core support."""
         audio = AudioFileClip(audio_path)
-        duration = max(15, audio.duration)
+        duration = audio.duration
         
-        # Turbo Local Optimization: Reduced Resolution (720x1280) and FPS (18)
-        # 1. Dynamic Background Sequence
+        # Theme Definitions
+        themes = {
+            "TECH": {
+                "accent": (0, 242, 254), # Cyan
+                "bg_fallback": (15, 23, 42), # Dark Navy
+                "course_color": "#00f2fe",
+                "headline_bg": (0, 0, 0, 160)
+            },
+            "CORPORATE": {
+                "accent": (59, 130, 246), # Blue
+                "bg_fallback": (31, 41, 55), # Gray 800
+                "course_color": "#3b82f6",
+                "headline_bg": (17, 24, 39, 180)
+            },
+            "CREATIVE": {
+                "accent": (236, 72, 153), # Pink
+                "bg_fallback": (88, 28, 135), # Purple
+                "course_color": "#ec4899",
+                "headline_bg": (0, 0, 0, 140)
+            }
+        }
+        style = themes.get(theme.upper(), themes["TECH"])
+        
+        target_size = (540, 960) if fast_mode else (720, 1280)
+        target_fps = 15 if fast_mode else 24
+        
+        # 1. Background Sequence
         bg_clips = []
-        target_size = (720, 1280)
+        scenes = data.get("video_script", {}).get("scenes", [])
+        num_scenes = len(scenes) if scenes else 1
+        clip_dur = duration / num_scenes
         
-        if bg_image_paths and len(bg_image_paths) > 0:
-            num_images = len(bg_image_paths)
-            clip_dur = duration / num_images
-            
-            for i, img_path in enumerate(bg_image_paths):
+        # Use videos if available, otherwise images
+        source_paths = bg_video_paths if bg_video_paths else bg_image_paths
+        
+        if source_paths:
+            for i, s_path in enumerate(source_paths):
                 try:
-                    if os.path.exists(img_path):
-                        img = Image.open(img_path).convert("RGB")
-                        bg_arr = np.array(img)
-                        clip = ImageClip(bg_arr).with_duration(clip_dur + 0.5).with_start(i * clip_dur)
-                        img.close()
-                        
-                        w, h = clip.size
-                        aspect_ratio = 720 / 1280
-                        if w/h > aspect_ratio:
-                            new_h = 1280
-                            new_w = int(w * (1280 / h))
-                        else:
-                            new_w = 720
-                            new_h = int(h * (720 / w))
-                        
-                        clip = clip.resized(width=new_w) if w/h > aspect_ratio else clip.resized(height=new_h)
-                        clip = clip.cropped(x_center=new_w/2, y_center=new_h/2, width=720, height=1280)
-                        
-                        if i > 0:
-                            clip = clip.with_effects([CrossFadeIn(0.5)])
-                            
-                        zoom_dir = random.choice([1, -1])
-                        def dynamic_transform(t):
-                            if zoom_dir > 0:
-                                scale = 1 + 0.2 * (t / clip_dur)
+                    start_time = i * clip_dur
+                    actual_dur = clip_dur + (0.5 if i < len(source_paths) - 1 else 0)
+                    
+                    if s_path.endswith(".mp4"):
+                        clip = VideoFileClip(s_path).without_audio().with_duration(actual_dur).with_start(start_time)
+                        # Resize and center crop - optimize for speed
+                        if clip.w != target_size[0] or clip.h != target_size[1]:
+                            aspect_ratio = target_size[0] / target_size[1]
+                            if clip.w/clip.h > aspect_ratio:
+                                clip = clip.resized(height=target_size[1])
                             else:
-                                scale = 1.2 - 0.2 * (t / clip_dur)
-                            return scale
-
-                        clip = clip.resized(dynamic_transform)
-                        bg_clips.append(clip)
+                                clip = clip.resized(width=target_size[0])
+                            clip = clip.cropped(x_center=clip.w/2, y_center=clip.h/2, width=target_size[0], height=target_size[1])
+                    else:
+                        img = Image.open(s_path).convert("RGB")
+                        bg_arr = np.array(img)
+                        clip = ImageClip(bg_arr).with_duration(actual_dur).with_start(start_time)
+                        img.close()
+                        clip = clip.resized(height=target_size[1]) if clip.w/clip.h > target_size[0]/target_size[1] else clip.resized(width=target_size[0])
+                        clip = clip.cropped(x_center=clip.w/2, y_center=clip.h/2, width=target_size[0], height=target_size[1])
+                    
+                    if i > 0 and not fast_mode:
+                        clip = clip.with_effects([CrossFadeIn(0.4)])
+                    bg_clips.append(clip)
                 except Exception as e:
-                    print(f"Error processing image {img_path}: {e}")
-            
-            if not bg_clips:
-                bg = ColorClip(size=target_size, color=(15, 23, 42)).with_duration(duration)
-            else:
-                bg = CompositeVideoClip(bg_clips, size=target_size).with_duration(duration)
-        else:
-            bg = ColorClip(size=target_size, color=(15, 23, 42)).with_duration(duration)
-            bg_clips = [bg]
+                    print(f"Error processing asset {s_path}: {e}")
 
-        # 1.5 Cinematic Overlays
-        dust_overlay = ColorClip(size=target_size, color=(255, 255, 255)).with_opacity(0.04).with_duration(duration)
+            bg = CompositeVideoClip(bg_clips, size=target_size).with_duration(duration) if bg_clips else ColorClip(size=target_size, color=style["bg_fallback"]).with_duration(duration)
+        else:
+            bg = ColorClip(size=target_size, color=style["bg_fallback"]).with_duration(duration)
+
+        layers = [bg]
         
-        # Human Touch: Subtle Warm Color Grade
-        warm_grade = ColorClip(size=target_size, color=(255, 150, 50)).with_opacity(0.03).with_duration(duration)
-        
-        layers = [bg, dust_overlay, warm_grade]
-        
-        # Add Vignette for focus
-        vignette_img = Image.new('RGBA', target_size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(vignette_img)
-        # Simple radial gradient as vignette
-        for i in range(1, 1281, 20):
-            alpha = int(180 * (i / 1280))
-            draw.ellipse([720/2 - i, 1280/2 - i, 720/2 + i, 1280/2 + i], outline=(0, 0, 0, alpha), width=20)
-        vignette_arr = np.array(vignette_img)
-        vignette = ImageClip(vignette_arr).with_duration(duration)
+        # Cinematic Grade
+        vignette = ColorClip(size=target_size, color=(0, 0, 0)).with_opacity(0.3).with_duration(duration)
         layers.append(vignette)
 
         if logo_path and os.path.exists(logo_path):
-            logo = ImageClip(logo_path).with_duration(duration).resized(width=160)
-            logo = logo.with_position(('center', 80)).with_start(0.5).with_effects([CrossFadeIn(0.5)])
+            logo_w = 120 if fast_mode else 160
+            logo = ImageClip(logo_path).with_duration(duration).resized(width=logo_w)
+            logo = logo.with_position(('center', 60 if fast_mode else 80)).with_start(0.5)
             layers.append(logo)
 
-        # Humanized Layout: Variable Text Positions
+        # 2. Text Overlays
         title_text = data.get("Course", data.get("course_name", "Featured Course"))
         headline = data.get("poster_headline", "Master This Skill")
-        font_path = "C:\\Windows\\Fonts\\arialbd.ttf"  # Arial Bold
         
-        # Brand Accent Line (Top)
-        accent_color = (0, 242, 254) # Cyan-ish brand color
-        accent = ColorClip(size=(450, 6), color=accent_color).with_duration(duration).with_position(('center', 320)).with_start(1).with_effects([CrossFadeIn(0.5)])
-        layers.append(accent)
+        font_paths = [
+            os.path.join("assets", "fonts", "Inter-Bold.ttf"),
+            "C:\\Windows\\Fonts\\arialbd.ttf"
+        ]
+        font_path = next((p for p in font_paths if os.path.exists(p)), None)
+        
+        # Brand Accent Line (Removed per user request)
 
-        # Headline (Top-Mid)
-        headline_arr = create_text_image(
-            text=headline.upper(), 
-            width=680, 
-            font_path=font_path, 
-            font_size=65, 
-            color="white",
-            bg_color=(0, 0, 0, 160) # Semi-transparent black box
+        # Headline
+        h_size = 45 if fast_mode else 65
+        h_y = 330 if fast_mode else 380
+        headline_arr = create_text_image(text=headline.upper(), width=target_size[0]-100, font_path=font_path, font_size=h_size, color="white", bg_color=style["headline_bg"])
+        headline_clip = ImageClip(headline_arr).with_duration(duration).with_position(('center', h_y)).with_start(1)
+        
+        # Course Name
+        c_size = 30 if fast_mode else 40
+        c_y = 880 if fast_mode else 1150
+        course_arr = create_text_image(text=title_text, width=target_size[0]-100, font_path=font_path, font_size=c_size, color=style["course_color"], bg_color=(0, 0, 0, 180))
+        course_clip = ImageClip(course_arr).with_duration(duration).with_position(('center', c_y)).with_start(1.2)
+        
+        layers.extend([headline_clip, course_clip])
+
+        # 4. Final Composition & Rendering
+        video = CompositeVideoClip(layers, size=target_size).with_audio(audio)
+        output_path = os.path.join(self.output_dir, f"{filename}.mp4")
+        
+        thread_count = multiprocessing.cpu_count()
+        video.write_videofile(
+            output_path, 
+            fps=target_fps, 
+            codec="libx264", 
+            audio_codec="aac", 
+            preset="ultrafast",
+            threads=thread_count,
+            logger=None
         )
-        headline_clip = ImageClip(headline_arr).with_duration(duration).with_position(('center', 380)).with_start(1).with_effects([CrossFadeIn(0.5)])
         
-        # Course Name (Lower-Mid)
-        course_arr = create_text_image(
-            text=title_text, 
-            width=680, 
-            font_path=font_path, 
-            font_size=50, 
-            color="#00f2fe", # Brand primary color
-            bg_color=(0, 0, 0, 180)
-        )
-        # Randomize course name position (top vs bottom) for variety
-        pos_y = random.choice([950, 1050])
-        course_clip = ImageClip(course_arr).with_duration(duration).with_position(('center', pos_y)).with_start(1.5).with_effects([CrossFadeIn(0.5)])
-        
-        # Footer Gradient Overlay
-        footer_gradient = ColorClip(size=(720, 280), color=(0, 0, 0)).with_opacity(0.7).with_duration(duration).with_position(('center', 'bottom'))
-        layers.extend([footer_gradient, headline_clip, course_clip])
-
-        # Progress bar (common in human-generated reels)
-        progress_bar_bg = ColorClip(size=(720, 8), color=(255, 255, 255)).with_opacity(0.2).with_duration(duration).with_position(('center', 'bottom'))
-        
-        def make_progress_bar(t):
-            bar_w = int(720 * (t / duration))
-            if bar_w < 1: bar_w = 1
-            return ColorClip(size=(bar_w, 8), color=accent_color)
-            
-        progress_bar = ImageClip(np.zeros((8, 720, 3))).with_duration(duration).with_position(('left', 'bottom'))
-        # Custom progress bar using a simple animation function
-        progress_bar = ColorClip(size=(1, 8), color=accent_color).with_duration(duration)
-        # MoviePy 2 doesn't easily support dynamic resizing with lambda for ColorClip in this way, 
-        # so we'll just omit it or use a static glow for now to keep it stable.
-        layers.append(progress_bar_bg) # Add the static background for the progress bar
-        # layers.append(progress_bar) # If dynamic progress bar is implemented, add it here
-
-        # 4. Final Composition
-        video = CompositeVideoClip(layers, size=target_size)
-        video = video.with_audio(audio)
-        
-        output_filename = f"{filename}.mp4"
-        output_path = os.path.join(self.output_dir, output_filename)
-        
-        print(f"DEBUG: Starting Turbo Rendering for {output_filename} (speed first)")
-        video.write_videofile(output_path, fps=18, codec="libx264", audio_codec="aac", preset="ultrafast")
-        print(f"DEBUG: Finished Turbo Rendering for {output_filename}")
-        
-        # Clean up moviepy resources to prevent avcodec errors on subsequent runs
         try:
             audio.close()
             video.close()
-            for layer in layers:
-                layer.close()
-        except:
-            pass
+        except: pass
             
         return output_path
 
 if __name__ == "__main__":
-    # Test Data
+    vg = VideoGenerator()
     test_data = {
         "Course": "AI Integrated Flutter Development",
         "video_script": {
             "scenes": [
-                {"text": "Build the future of mobile apps.", "keyword": "mobile development"},
+                {"text": "Build the future of mobile apps.", "keyword": "mobile developer"},
                 {"text": "Learn how to integrate AI into Flutter.", "keyword": "artificial intelligence"},
-                {"text": "Join Acadeno Technologies today.", "keyword": "technology"}
+                {"text": "Join Acadeno Technologies today.", "keyword": "technology business"}
             ]
         }
     }
-    
-    vg = VideoGenerator()
-    asyncio.run(vg.create_reel(test_data, "test_reel_threaded"))
+    asyncio.run(vg.create_reel(test_data, "theme_test_reel", theme="TECH"))

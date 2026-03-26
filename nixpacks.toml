@@ -2,7 +2,7 @@
 PLAYWRIGHT_BROWSERS_PATH = "/app/playwright-browsers"
 
 [phases.setup]
-nixPkgs = ["python3", "ffmpeg", "libgbm1", "libnss3", "nspr", "libatk", "at-spi2-atk", "libdrm", "libxcb", "libxkbcommon", "mesa", "alsa-lib"]
+nixPkgs = ["python3", "ffmpeg", "libgbm1", "libnss3", "nspr", "libatk", "at-spi2-atk", "libdrm", "libxcb", "libxkbcommon", "mesa", "alsa-lib", "fontconfig", "freetype", "pango"]
 
 [phases.install]
 cmds = [

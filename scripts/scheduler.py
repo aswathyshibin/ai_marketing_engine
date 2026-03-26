@@ -36,7 +36,7 @@ class MarketingScheduler:
                 # 3. Generate Reel (every other course or specific logic)
                 if i % 2 == 0:
                     reel_filename = f"reel_{i:03d}_{course['Course'].replace(' ', '_').lower()}"
-                    await self.video_gen.create_reel(course, reel_filename, bg_image_path=poster_path)
+                    await self.video_gen.create_reel(course, reel_filename, bg_image_paths=[poster_path], fast_mode=True)
                 
                 print(f"Successfully processed {course['Course']}")
                 
